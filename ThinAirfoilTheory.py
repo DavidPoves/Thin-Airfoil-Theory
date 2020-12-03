@@ -48,6 +48,7 @@ class ThinAirfoilTheory(object):
 		self.sympy_der = None  # Sympy equation of sympy_poly_der with the change of variable required.
 		self.lambda_der = None  # Lambda function of sympy_der.
 		self.header = ''
+		self.cl, self.zero_lift_angle = None, None
 
 	@staticmethod
 	def determine_best_polynomial_fit(x_data, y_data, max_degree=5):
@@ -107,7 +108,7 @@ class ThinAirfoilTheory(object):
 				file_lines.append(line)
 
 		# Extract the x and y coordinates according to the specified format.
-		self.header = file_lines[0]  # Extract the header for completeness.
+		self.header = ' '.join([element for element in file_lines[0].split()])  # Extract the header of the file.
 		coords_arr = []
 		for line in file_lines[1:]:  # Assuming the first line is the header (name of the airfoil).
 			coord_lst = []
@@ -191,13 +192,14 @@ class ThinAirfoilTheory(object):
 		self.best_pol = np.poly1d(self.best_pol_dict['coefficients'])
 		self.best_pol_der = self.best_pol.deriv(1)
 
-	def solve_theory(self, angle_of_attack, chord=1, n_coefficients=2):
+	def solve_theory(self, angle_of_attack, chord=1, n_coefficients=3, report=True):
 		"""
 		Solve the thin airfoil theory for a given angle of attack and chord length using the number of A coefficients
 		as given in n_coefficients.
 		:param angle_of_attack: Angle of attack of the airfoil IN RADIANS.
 		:param chord: Chord length with same units as the x coordinates. Optional, default is normalized (c=1).
-		:param n_coefficients: Number of coefficients to be solved. Optional, default is 2.
+		:param n_coefficients: Number of coefficients to be solved. Must be greater than 2. Optional, default is 3.
+		:param report: Boolean indicating if a report containing all relevant calculated information should be printed.
 		:return: Tuple containing the corresponding coefficients.
 		"""
 		# Perform the change of variable. To do so, first transform the numpy polynomial to sympy.
@@ -212,15 +214,53 @@ class ThinAirfoilTheory(object):
 		coefficients = []
 		A0 = angle_of_attack - (1/np.pi)*integrate.quad(self.lambda_der, 0, np.pi)[0]
 		coefficients.append(A0)
+		assert n_coefficients >= 2, 'More than 1 coefficient should be computed in order to derive data from this theory'
 		for i in np.arange(1, n_coefficients):
 			coefficients.append((2/np.pi)*integrate.quad(lambda angle: self.lambda_der(angle)*np.cos(i*angle), 0, np.pi)
-			[0])
+				[0])
+
+		# Compute data derived from the theory.
+		self._compute_relevant_data(coefficients, chord)
+
+		# Print the report if required.
+		if report:
+			print("\n-----------------------------------------------------------------------------------\n")
+			print(f"Showing the data derived from the Thin Airfoil Theory for profile {self.header}:\n")
+			print(f"Angle of attack: {angle_of_attack*180/np.pi:.2f} degrees.\n")
+			print(f"Zero lift angle of attack: {self.zero_lift_angle*180/np.pi:.2f} degrees.\n")
+			print(f"Lift coefficient: {self.cl:.5f}\n")
+			print(f"Moment coefficient around the leading edge: {self.cm_le:.5f}\n")
+			print(f"Moment coefficient around the quarter chord: {self.cm_quarter:.5f}\n")
+			print("\n-----------------------------------------------------------------------------------\n")
 
 		return tuple(coefficients)
+
+	def _compute_relevant_data(self, coefficients, chord):
+		"""
+		Compute all the information that can be derived from the thin airfoil theory given the necessary coefficients.
+		:param coefficients: Array-like of all the computed coefficients.
+		:param chord: The length of chord of the airfoil, with same units as the x coordinates.
+		:return:
+		"""
+		# Compute the lift coefficient.
+		self.cl = 2*np.pi*(coefficients[0] + 0.5*coefficients[1])
+
+		# Compute the zero lift angle of attack.
+		factor = -(1/np.pi)
+		self.zero_lift_angle = factor*integrate.quad(lambda angle: self.lambda_der(angle)*(np.cos(angle)-1), 0, np.pi)[0]
+
+		# Compute the moment coefficient about the Leading Edge.
+		self.cm_le = -(self.cl/4 + np.pi/4*(coefficients[1] - coefficients[2]))
+
+		# Compute the moment coefficient about the quarter chord.
+		self.cm_quarter = np.pi/4 * (coefficients[2] - coefficients[1])
+
+		# Compute the center of pressure.
+		self.x_cp = chord/4*(1+np.pi/self.cl*(coefficients[1] - coefficients[2]))
 
 
 if __name__ == '__main__':
 	thin_theory = ThinAirfoilTheory()
-	thin_theory.read_file(filename='NACA 4309.dat')
-	thin_theory.build_mean_camber_line(max_pol_degree=5)
-	A0, A1 = thin_theory.solve_theory(angle_of_attack=2.5*np.pi/180, n_coefficients=2)
+	thin_theory.read_file(filename='NACA 2408.dat')
+	thin_theory.build_mean_camber_line(max_pol_degree=7)
+	A0, A1, A2 = thin_theory.solve_theory(angle_of_attack=5*np.pi/180, n_coefficients=3)
